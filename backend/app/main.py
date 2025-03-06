@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.endpoints import try_on
+from app.api.endpoints import try_on, websocket
 
 app = FastAPI(title="Virtual Try-On API")
 
@@ -15,6 +15,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(try_on.router, prefix="/try-on", tags=["try-on"])
+app.include_router(websocket.router, prefix="/ws")
 
 @app.get("/")
 async def root():

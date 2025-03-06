@@ -1,0 +1,11 @@
+Model Information:
+* title:	women's shirt
+* source:	https://sketchfab.com/3d-models/womens-shirt-cfe3a4c135424c65825fb07503021f3d
+* author:	Kirll (https://sketchfab.com/milk8982618milk)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "women's shirt" (https://sketchfab.com/3d-models/womens-shirt-cfe3a4c135424c65825fb07503021f3d) by Kirll (https://sketchfab.com/milk8982618milk) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
