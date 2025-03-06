@@ -1,276 +1,277 @@
 'use client'
 
-import React, { useEffect, useRef, useState, Suspense } from 'react'
+import React, { useEffect, useRef, useState, Suspense, useCallback } from 'react'
 import * as THREE from 'three'
 import { Canvas } from '@react-three/fiber'
 import { OrbitControls, useGLTF, Environment } from '@react-three/drei'
+import { ClothingItem, PoseData } from '@/types/clothing'
+import ClothingSelector from '../ClothingSelector/ClothingSelector'
+import ErrorBoundary from '../ErrorBoundary/ErrorBoundary'
+import { PoseAlignmentService } from '@/services/PoseAlignmentService'
+import { usePoseDetection } from './PoseDetectionWrapper'
+import AugmentedView from './AugmentedView'
 
-const Model = ({ poseData }: { poseData?: any }) => {
-  const gltf = useGLTF('/models/womens_shirt/scene.gltf')
-  const [isLoaded, setIsLoaded] = useState(false)
-  
-  useEffect(() => {
-    if (gltf) {
-      setIsLoaded(true)
-      // Set initial position and scale
-      gltf.scene.position.set(0, 2, -1)
-      gltf.scene.scale.set(8, 8, 8) // Increased initial scale
-      gltf.scene.rotation.set(0, Math.PI, 0)
+const clothingItems: ClothingItem[] = [
+  {
+    id: 't_shirt_1',
+    name: 'Womens Shirt',
+    modelPath: './models/womens_shirt/scene.gltf',
+    thumbnail: './models/womens_shirt/thumbnail.jpg',
+    category: 'tops',
+    defaultScale: 2.5,
+    defaultPosition: [0, 0, 0] as [number, number, number],
+    offset: {
+      position: { x: 0, y: 0.3, z: 0.2 },
+      rotation: { x: 0, y: Math.PI, z: 0 },
+      scale: 1.5
     }
-  }, [gltf])
-  
+  }
+]
+
+const Model = ({ selectedItem, poseData, alignmentService }: { 
+  selectedItem: ClothingItem;
+  poseData: PoseData | null;
+  alignmentService: PoseAlignmentService | null;
+}) => {
+  const modelRef = useRef<THREE.Group>(null)
+  const { scene } = useGLTF(selectedItem.modelPath)
+  const [modelLoaded, setModelLoaded] = useState(false)
+
   useEffect(() => {
-    if (poseData && !poseData.error && isLoaded) {
+    if (scene) {
       try {
-        const { landmarks } = poseData
+        const clonedScene = scene.clone(true)
         
-        if (landmarks && landmarks[11] && landmarks[12]) {
-          const leftShoulder = landmarks[11]
-          const rightShoulder = landmarks[12]
-          const leftHip = landmarks[23]
-          const rightHip = landmarks[24]
-          const neck = landmarks[0] // Using nose as reference for depth
+        // Initial positioning for 3D preview
+        clonedScene.scale.setScalar(selectedItem.defaultScale)
+        clonedScene.position.set(0, 0, 0)
+        clonedScene.rotation.set(0, Math.PI, 0)
+
+        // If we have pose data, align with body
+        if (poseData?.landmarks && alignmentService) {
+          const shoulders = {
+            left: poseData.landmarks[11],
+            right: poseData.landmarks[12]
+          }
           
-          // Calculate body dimensions with normalized coordinates
-          const shoulderWidth = Math.abs(rightShoulder.x - leftShoulder.x)
-          const bodyHeight = Math.abs((leftShoulder.y + rightShoulder.y)/2 - (leftHip.y + rightHip.y)/2)
+          // Calculate position based on shoulders
+          const centerX = (shoulders.left.x + shoulders.right.x) / 2
+          const centerY = shoulders.left.y - 0.2 // Slightly above shoulders
+          const centerZ = (shoulders.left.z + shoulders.right.z) / 2
           
-          // Calculate center position with better shoulder alignment
-          const centerX = (leftShoulder.x + rightShoulder.x) / 2
-          const shoulderY = (leftShoulder.y + rightShoulder.y) / 2
-          const hipY = (leftHip.y + rightHip.y) / 2
-          const centerY = (shoulderY + hipY) / 2
-          
-          // Improved position calculations
-          const posX = (centerX - 0.5) * 10 // Increased range for more responsive horizontal movement
-          const posY = -(centerY - 0.4) * 12 + 2 // Adjusted vertical positioning
-          const posZ = -1 - (neck.z * 2) // Dynamic depth based on neck position
-          
-          // More responsive position updates
-          gltf.scene.position.x = THREE.MathUtils.lerp(gltf.scene.position.x, posX, 0.5)
-          gltf.scene.position.y = THREE.MathUtils.lerp(gltf.scene.position.y, posY, 0.5)
-          gltf.scene.position.z = THREE.MathUtils.lerp(gltf.scene.position.z, posZ, 0.3)
-          
-          // Improved rotation calculation
-          const shoulderAngle = Math.atan2(
-            rightShoulder.z - leftShoulder.z,
-            rightShoulder.x - leftShoulder.x
+          clonedScene.position.set(
+            centerX * 2,
+            -centerY * 2,
+            -centerZ * 2
           )
-          
-          // Smoother rotation with faster response
-          const targetRotation = Math.PI + shoulderAngle
-          gltf.scene.rotation.y = THREE.MathUtils.lerp(
-            gltf.scene.rotation.y,
-            targetRotation,
-            0.4
-          )
-          
-          // Dynamic scaling based on body proportions
-          const baseScale = 15 // Increased base scale
-          const widthScale = shoulderWidth * baseScale
-          const heightScale = bodyHeight * (baseScale * 1.2) // Slightly taller
-          
-          // Calculate final scale with minimum threshold
-          const minScale = 6
-          const maxScale = 20
-          const finalScale = THREE.MathUtils.clamp(
-            Math.max(widthScale, heightScale),
-            minScale,
-            maxScale
-          )
-          
-          // Apply scale with faster response
-          const scaleSpeed = 0.4
-          gltf.scene.scale.x = THREE.MathUtils.lerp(gltf.scene.scale.x, finalScale, scaleSpeed)
-          gltf.scene.scale.y = THREE.MathUtils.lerp(gltf.scene.scale.y, finalScale, scaleSpeed)
-          gltf.scene.scale.z = THREE.MathUtils.lerp(gltf.scene.scale.z, finalScale, scaleSpeed)
+
+          // Scale based on shoulder width
+          const shoulderWidth = Math.abs(shoulders.right.x - shoulders.left.x)
+          const scale = shoulderWidth * 3
+          clonedScene.scale.setScalar(scale)
+        }
+
+        if (modelRef.current) {
+          modelRef.current.clear()
+          modelRef.current.add(clonedScene)
+          setModelLoaded(true)
         }
       } catch (error) {
-        console.error('Error updating model:', error)
+        console.error('Error setting up model:', error)
       }
     }
-  }, [poseData, gltf.scene, isLoaded])
+  }, [scene, poseData, selectedItem, alignmentService])
 
   return (
-    <primitive 
-      object={gltf.scene}
-      castShadow
-      receiveShadow
-      position={[0, 2, -1]}
-      scale={[8, 8, 8]} // Matched with initial scale
-    />
+    <group ref={modelRef}>
+      {!modelLoaded && <LoadingBox />}
+    </group>
   )
 }
 
-useGLTF.preload('/models/womens_shirt/scene.gltf')
-
-const TryOnComponent = () => {
-  const videoRef = useRef<HTMLVideoElement>(null)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const wsRef = useRef<WebSocket | null>(null)
-  const [modelVisible, setModelVisible] = useState(false)
-  const [poseData, setPoseData] = useState(null)
-  const [isWsConnected, setIsWsConnected] = useState(false)
-  const [debugFrame, setDebugFrame] = useState<string | null>(null)
-
-  useEffect(() => {
-    // Setup WebSocket connection with reconnection logic
-    const connectWebSocket = () => {
-      wsRef.current = new WebSocket('ws://localhost:8000/ws/pose')
-      
-      wsRef.current.onopen = () => {
-        console.log('WebSocket Connected')
-        setIsWsConnected(true)
-      }
-
-      wsRef.current.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data)
-          setPoseData(data)
-          if (data.debug_frame) {
-            setDebugFrame(data.debug_frame)
-          }
-        } catch (error) {
-          console.error('Error parsing WebSocket message:', error)
-        }
-      }
-
-      wsRef.current.onclose = () => {
-        console.log('WebSocket disconnected. Attempting to reconnect...')
-        setIsWsConnected(false)
-        setTimeout(connectWebSocket, 3000) // Retry every 3 seconds
-      }
-
-      wsRef.current.onerror = (error) => {
-        console.error('WebSocket error:', error)
-      }
-    }
-
-    connectWebSocket()
-
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.close()
-        setIsWsConnected(false)
-      }
-    }
-  }, [])
-
-  useEffect(() => {
-    const startWebcam = async () => {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({ 
-          video: { width: 640, height: 480 } 
-        })
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream
-        }
-      } catch (err) {
-        console.error("Error accessing webcam:", err)
-      }
-    }
-
-    startWebcam()
-  }, [])
-
-  // Update sendFrame function
-  const sendFrame = () => {
-    const canvas = canvasRef.current
-    if (!canvas || !videoRef.current || !wsRef.current || !isWsConnected) return
-
-    const context = canvas.getContext('2d')
-    if (context) {
-      context.drawImage(videoRef.current, 0, 0, 640, 480)
-      const base64Frame = canvas.toDataURL('image/jpeg')
-      if (wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(base64Frame)
-      }
-    }
-    requestAnimationFrame(sendFrame)
-  }
-
-  // Only start sending frames when WebSocket is connected
-  useEffect(() => {
-    if (isWsConnected) {
-      sendFrame()
-    }
-  }, [isWsConnected])
-
-  useEffect(() => {
-    // Make model visible by default
-    setModelVisible(true)
-  }, [])
-
-  return (
-    <div className="try-on-container">
-      <h2 className="text-xl font-bold mb-4">Virtual Try-On</h2>
-      <div className="grid grid-cols-2 gap-4">
-        <div className="webcam-container">
-          <p className="text-sm text-gray-600 mb-2">Webcam Feed:</p>
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            className="rounded-lg shadow-md w-full"
-          />
-        </div>
-        <div className="model-container h-[480px]">
-          <p className="text-sm text-gray-600 mb-2">3D Model Preview:</p>
-          <Canvas
-            camera={{ 
-              position: [0, 0, 10], // Moved camera back slightly
-              fov: 40, // Narrower FOV for better perspective
-              near: 0.1,
-              far: 1000
-            }}
-            shadows
-            gl={{ preserveDrawingBuffer: true }}
-            className="rounded-lg shadow-md w-full h-full bg-gray-100"
-          >
-            <Suspense fallback={<LoadingBox />}>
-              <ambientLight intensity={2} />
-              <directionalLight
-                position={[5, 5, 5]}
-                intensity={3}
-                castShadow
-              />
-              <directionalLight
-                position={[-5, 5, -5]}
-                intensity={2}
-                castShadow
-              />
-              <Model poseData={poseData} />
-              <Environment preset="studio" />
-              <OrbitControls 
-                makeDefault
-                minPolarAngle={0}
-                maxPolarAngle={Math.PI}
-                enableZoom={true}
-                enablePan={true}
-                enableRotate={true}
-                target={[0, 2, -1]}
-              />
-            </Suspense>
-          </Canvas>
-        </div>
-      </div>
-      <canvas 
-        ref={canvasRef} 
-        width={640} 
-        height={480} 
-        style={{ display: 'none' }} 
-      />
-    </div>
-  )
-}
-
-// Simple loading indicator
 const LoadingBox = () => (
   <mesh>
     <boxGeometry args={[1, 1, 1]} />
     <meshStandardMaterial color="hotpink" />
   </mesh>
 )
+
+const TryOnComponent = () => {
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const [selectedItem, setSelectedItem] = useState<ClothingItem>(clothingItems[0])
+  const [poseData, setPoseData] = useState<PoseData | null>(null)
+  const [isLoading, setIsLoading] = useState(true)
+  const [webcamError, setWebcamError] = useState<string | null>(null)
+  const [alignmentService, setAlignmentService] = useState<PoseAlignmentService | null>(null)
+
+  const handlePoseDetected = useCallback((pose: any) => {
+    setPoseData(pose)
+  }, [])
+
+  const pose = usePoseDetection(videoRef, handlePoseDetected)
+
+  useEffect(() => {
+    if (videoRef.current && pose) {
+      const processFrame = async () => {
+        if (videoRef.current) {
+          await pose.send({ image: videoRef.current })
+        }
+        requestAnimationFrame(processFrame)
+      }
+
+      processFrame()
+    }
+  }, [pose])
+
+  useEffect(() => {
+    if (!videoRef.current) return
+
+    // Start webcam
+    const startWebcam = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { 
+            width: 640, 
+            height: 480,
+            facingMode: 'user'
+          } 
+        })
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream
+          setWebcamError(null)
+        }
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'Failed to access webcam'
+        console.error("Error accessing webcam:", err)
+        setWebcamError(errorMessage)
+        setIsLoading(false)
+      }
+    }
+
+    startWebcam()
+  }, [])
+
+  // Initialize alignment service on client side
+  useEffect(() => {
+    const initService = async () => {
+      const service = await new PoseAlignmentService().initialize()
+      setAlignmentService(service)
+    }
+    initService()
+  }, [])
+
+  return (
+    <div className="try-on-container p-6">
+      <h2 className="text-2xl font-bold mb-6">Virtual Try-On</h2>
+      <div className="grid grid-cols-2 gap-8">
+        <div className="webcam-container relative">
+          <p className="text-sm text-gray-600 mb-2">Virtual Try-On View:</p>
+          {isLoading && (
+            <div className="absolute inset-0 flex items-center justify-center bg-gray-100 bg-opacity-75">
+              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500" />
+            </div>
+          )}
+          {webcamError && (
+            <div className="absolute inset-0 flex items-center justify-center bg-red-100 bg-opacity-75 rounded-lg">
+              <p className="text-red-600 text-center p-4">{webcamError}</p>
+            </div>
+          )}
+          <AugmentedView 
+            videoRef={videoRef}
+            poseData={poseData}
+            selectedItem={selectedItem}
+          />
+        </div>
+        <div className="model-container h-[480px]">
+          <p className="text-sm text-gray-600 mb-2">3D Model Preview:</p>
+          <Canvas
+            camera={{ 
+              position: [0, 0, 3],
+              fov: 60,
+              near: 0.1,
+              far: 1000
+            }}
+            shadows
+            gl={{ 
+              preserveDrawingBuffer: true,
+              antialias: true
+            }}
+            className="rounded-lg shadow-md w-full h-full bg-gray-100"
+          >
+            <Suspense fallback={<LoadingBox />}>
+              <ambientLight intensity={1} />
+              <directionalLight 
+                position={[5, 5, 5]} 
+                intensity={1.5}
+                castShadow
+              />
+              <directionalLight 
+                position={[-5, 5, -5]} 
+                intensity={1}
+                castShadow
+              />
+              <spotLight
+                position={[0, 5, 0]}
+                intensity={0.8}
+                angle={Math.PI / 4}
+                castShadow
+              />
+              <Model 
+                selectedItem={selectedItem} 
+                poseData={poseData} 
+                alignmentService={alignmentService}
+              />
+              <Environment preset="studio" />
+              <OrbitControls 
+                makeDefault 
+                enablePan={true}
+                enableZoom={true}
+                enableRotate={true}
+                minDistance={1.5}
+                maxDistance={6}
+                target={[0, 0, 0]}
+              />
+            </Suspense>
+          </Canvas>
+        </div>
+      </div>
+      <div className="mt-8">
+        <ClothingSelector 
+          items={clothingItems} 
+          selectedItem={selectedItem}
+          onSelect={setSelectedItem} 
+        />
+      </div>
+    </div>
+  )
+}
+
+// Add a component to visualize landmarks
+const PoseLandmarks = ({ landmarks }: { landmarks: PoseData['landmarks'] }) => {
+  return (
+    <svg className="absolute top-0 left-0 w-full h-full" style={{ transform: 'scaleX(-1)' }}>
+      {landmarks.map((landmark, index) => (
+        <circle
+          key={index}
+          cx={landmark.x * 640}
+          cy={landmark.y * 480}
+          r={3}
+          fill={(landmark.visibility ?? 0) > 0.5 ? "lime" : "red"}
+        />
+      ))}
+      {/* Draw lines between shoulders */}
+      {landmarks[11] && landmarks[12] && (
+        <line
+          x1={landmarks[11].x * 640}
+          y1={landmarks[11].y * 480}
+          x2={landmarks[12].x * 640}
+          y2={landmarks[12].y * 480}
+          stroke="yellow"
+          strokeWidth="2"
+        />
+      )}
+    </svg>
+  )
+}
 
 export default TryOnComponent 
