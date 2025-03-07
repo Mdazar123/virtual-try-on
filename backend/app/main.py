@@ -4,10 +4,17 @@ from app.api.endpoints import try_on, websocket
 
 app = FastAPI(title="Virtual Try-On API")
 
-# Configure CORS
+# Configure CORS for both HTTP and WebSocket
+origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost",
+    "http://127.0.0.1",
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with specific origins
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -15,7 +22,7 @@ app.add_middleware(
 
 # Include routers
 app.include_router(try_on.router, prefix="/try-on", tags=["try-on"])
-app.include_router(websocket.router, prefix="/ws")
+app.include_router(websocket.router)  # No prefix for WebSocket endpoints
 
 @app.get("/")
 async def root():
