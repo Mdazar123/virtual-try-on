@@ -1,29 +1,17 @@
 import * as THREE from 'three'
+import { PoseData } from '@/types/clothing'
 
 export class PoseAlignmentService {
-  private pose: any = null
-
   async initialize() {
-    if (typeof window !== 'undefined') {
-      const { Pose } = await import('@mediapipe/pose')
-      this.pose = new Pose({
-        locateFile: (file) => {
-          return `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
-        }
-      })
-
-      this.pose.setOptions({
-        modelComplexity: 1,
-        smoothLandmarks: true,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5
-      })
-    }
     return this
   }
 
-  public calculateClothAlignment(landmarks: any[], modelDimensions: THREE.Vector3, clothingRegion?: any) {
+  public calculateClothAlignment(landmarks: PoseData['landmarks'], modelDimensions: THREE.Vector3) {
     try {
+      if (!landmarks) {
+        throw new Error('No landmarks provided')
+      }
+
       // Get key body points
       const shoulders = {
         left: landmarks[11],
@@ -79,15 +67,15 @@ export class PoseAlignmentService {
 
   private getDistance(point1: any, point2: any) {
     return Math.sqrt(
-      Math.pow(point2.position.x - point1.position.x, 2) +
-      Math.pow(point2.position.y - point1.position.y, 2)
+      Math.pow(point2.x - point1.x, 2) +
+      Math.pow(point2.y - point1.y, 2)
     )
   }
 
   private getMidpoint(point1: any, point2: any) {
     return {
-      x: (point1.position.x + point2.position.x) / 2,
-      y: (point1.position.y + point2.position.y) / 2
+      x: (point1.x + point2.x) / 2,
+      y: (point1.y + point2.y) / 2
     }
   }
 
