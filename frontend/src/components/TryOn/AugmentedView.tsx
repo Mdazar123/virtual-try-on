@@ -1,30 +1,28 @@
 'use client'
 
-import React, { useRef, useEffect, useState } from 'react'
+import React, { useRef, useEffect } from 'react'
 import * as THREE from 'three'
 import { useGLTF } from '@react-three/drei'
-import { PoseData, ClothingItem } from '@/types/clothing'
-import * as tf from '@tensorflow/tfjs'
+import { ClothingItem, PoseData } from '@/types/clothing'
+import { usePoseEstimation } from '@/hooks/usePoseEstimation'
+import { PoseLandmarks } from './PoseLandmarks'
 
-const AugmentedView = ({ 
-  videoRef, 
-  poseData, 
-  selectedItem 
-}: { 
+interface AugmentedViewProps {
+  selectedItem: ClothingItem;
   videoRef: React.RefObject<HTMLVideoElement>;
   poseData: PoseData | null;
-  selectedItem: ClothingItem;
-}) => {
+}
+
+const AugmentedView = ({ selectedItem, videoRef, poseData }: AugmentedViewProps) => {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const [loadError, setLoadError] = useState<string | null>(null)
-  const { scene, error } = useGLTF(selectedItem.modelPath, undefined, (error) => {
-    console.error('Error loading model:', error)
-    setLoadError(error.message)
-  })
+  const { scene } = useGLTF(selectedItem.modelPath)
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null)
   const sceneRef = useRef<THREE.Scene | null>(null)
   const animationFrameRef = useRef<number>()
+  
+  // Use our custom pose estimation hook
+  const { poseData: poseDataFromHook, error } = usePoseEstimation(videoRef)
 
   useEffect(() => {
     if (!canvasRef.current || !videoRef.current) return
@@ -38,11 +36,12 @@ const AugmentedView = ({
     renderer.setSize(640, 480)
     renderer.setPixelRatio(window.devicePixelRatio)
     renderer.setClearColor(0x000000, 0)
+    renderer.shadowMap.enabled = true
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap
     rendererRef.current = renderer
 
     // Setup camera for AR view
-    const fov = 63 // Match the webcam's FOV
-    const camera = new THREE.PerspectiveCamera(fov, 640 / 480, 0.1, 1000)
+    const camera = new THREE.PerspectiveCamera(63, 640 / 480, 0.1, 1000)
     camera.position.set(0, 0, 2)
     camera.lookAt(0, 0, 0)
     cameraRef.current = camera
@@ -50,17 +49,20 @@ const AugmentedView = ({
     const scene = new THREE.Scene()
     sceneRef.current = scene
 
-    // Add lights
-    const ambientLight = new THREE.AmbientLight(0xffffff, 1)
+    // Enhanced lighting setup
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5)
     scene.add(ambientLight)
 
     const directionalLight = new THREE.DirectionalLight(0xffffff, 1)
-    directionalLight.position.set(0, 1, 1)
+    directionalLight.position.set(5, 5, 5)
+    directionalLight.castShadow = true
+    directionalLight.shadow.mapSize.width = 1024
+    directionalLight.shadow.mapSize.height = 1024
     scene.add(directionalLight)
 
-    const backLight = new THREE.DirectionalLight(0xffffff, 0.5)
-    backLight.position.set(0, 0, -1)
-    scene.add(backLight)
+    const fillLight = new THREE.DirectionalLight(0xffffff, 0.3)
+    fillLight.position.set(-5, 0, -5)
+    scene.add(fillLight)
 
     return () => {
       cancelAnimationFrame(animationFrameRef.current!)
@@ -69,73 +71,98 @@ const AugmentedView = ({
   }, [])
 
   useEffect(() => {
-    if (!poseData?.landmarks || !scene || !sceneRef.current || !cameraRef.current || !rendererRef.current) return
+    if (!poseData?.landmarks) return
 
     const animate = () => {
-      if (!poseData?.landmarks) return
+      if (!poseData?.landmarks || !scene || !sceneRef.current) return
 
       const clonedScene = scene.clone()
       
       // Clear existing model
-      while (sceneRef.current!.children.length > 3) { // Keep lights
+      while (sceneRef.current!.children.length > 3) {
         sceneRef.current!.remove(sceneRef.current!.children[3])
       }
 
-      // Get body landmarks
+      // Enhanced body measurements
       const shoulders = {
         left: poseData.landmarks[11],
         right: poseData.landmarks[12]
       }
-      const chest = poseData.landmarks[23]
       const hips = {
         left: poseData.landmarks[23],
         right: poseData.landmarks[24]
       }
+      const spine = {
+        top: poseData.landmarks[11],
+        mid: poseData.landmarks[23],
+        bottom: poseData.landmarks[24]
+      }
 
-      // Calculate body measurements with TensorFlow.js for stability
-      const shoulderWidth = tf.tidy(() => {
-        const leftPoint = tf.tensor1d([shoulders.left.x, shoulders.left.y])
-        const rightPoint = tf.tensor1d([shoulders.right.x, shoulders.right.y])
-        return tf.sqrt(tf.sum(tf.square(tf.sub(rightPoint, leftPoint)))).arraySync()
-      })
+      // Calculate improved body proportions
+      const shoulderWidth = Math.sqrt(
+        Math.pow(shoulders.right.x - shoulders.left.x, 2) +
+        Math.pow(shoulders.right.y - shoulders.left.y, 2)
+      )
+      const torsoHeight = Math.abs(spine.top.y - spine.bottom.y)
+      const bodyDepth = Math.abs(spine.mid.z - shoulders.left.z)
 
-      // Calculate model position in normalized coordinates (-1 to 1)
-      const centerX = (shoulders.left.x + shoulders.right.x) / 2 - 0.5
-      const centerY = -((shoulders.left.y + chest.y) / 2) + 0.5
-      const centerZ = -((shoulders.left.z + shoulders.right.z) / 2) - 1 // Move model in front of person
+      // Enhanced position calculation
+      const centerX = (shoulders.left.x + shoulders.right.x) / 2
+      const centerY = -(spine.top.y + spine.mid.y) / 2
+      const centerZ = -(spine.mid.z + shoulders.left.z) / 2
 
-      // Apply clothing offset if available
+      // Apply clothing offset with improved positioning
       const offset = selectedItem.offset || {
         position: { x: 0, y: 0, z: 0 },
         rotation: { x: 0, y: 0, z: 0 },
         scale: 1
       }
 
-      // Scale model based on shoulder width and offset
-      const baseScale = shoulderWidth * 5 * offset.scale // Increased scale factor
+      // Dynamic scaling based on body proportions
+      const baseScale = (
+        shoulderWidth * 3.5 +
+        torsoHeight * 1.5 +
+        bodyDepth * 1.0
+      ) * offset.scale
       clonedScene.scale.setScalar(baseScale)
 
-      // Position model with offset
-      clonedScene.position.set(
+      // Smooth position interpolation
+      const targetPosition = new THREE.Vector3(
         centerX * 2 + offset.position.x,
-        centerY * 2 + offset.position.y + 0.1, // Slight upward adjustment
+        centerY * 2 + offset.position.y,
         centerZ + offset.position.z
       )
 
-      // Calculate rotation based on shoulder angle
+      // Enhanced rotation calculation
+      const spineAngle = Math.atan2(
+        spine.bottom.z - spine.top.z,
+        spine.bottom.y - spine.top.y
+      )
       const shoulderAngle = Math.atan2(
         shoulders.right.y - shoulders.left.y,
         shoulders.right.x - shoulders.left.x
       )
+      const hipAngle = Math.atan2(
+        hips.right.y - hips.left.y,
+        hips.right.x - hips.left.x
+      )
 
-      // Apply rotation with offset
+      // Apply enhanced rotations
+      const smoothFactor = 0.15
+      clonedScene.position.lerp(targetPosition, smoothFactor)
       clonedScene.rotation.set(
-        offset.rotation.x,
-        Math.PI + shoulderAngle + offset.rotation.y,
+        spineAngle * 0.8 + offset.rotation.x,
+        Math.PI + shoulderAngle * 0.7 + hipAngle * 0.3 + offset.rotation.y,
         offset.rotation.z
       )
 
-      // Add model to scene
+      // Add model to scene with shadows
+      clonedScene.traverse((object) => {
+        if (object instanceof THREE.Mesh) {
+          object.castShadow = true
+          object.receiveShadow = true
+        }
+      })
       sceneRef.current!.add(clonedScene)
 
       // Render
@@ -148,7 +175,9 @@ const AugmentedView = ({
     animate()
 
     return () => {
-      cancelAnimationFrame(animationFrameRef.current!)
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current)
+      }
     }
   }, [scene, poseData, selectedItem])
 
@@ -167,9 +196,9 @@ const AugmentedView = ({
         className="absolute top-0 left-0 w-full h-full pointer-events-none"
         style={{ transform: 'scaleX(-1)' }}
       />
-      {loadError && (
+      {error && (
         <div className="absolute top-0 left-0 w-full h-full flex items-center justify-center bg-red-100 bg-opacity-75">
-          <p className="text-red-600 text-center p-4">Error loading model: {loadError}</p>
+          <p className="text-red-600 text-center p-4">{error}</p>
         </div>
       )}
       {poseData && <PoseLandmarks landmarks={poseData.landmarks} />}

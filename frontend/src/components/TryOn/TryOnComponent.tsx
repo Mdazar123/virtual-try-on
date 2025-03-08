@@ -8,67 +8,121 @@ import { ClothingItem, PoseData } from '@/types/clothing'
 import ClothingSelector from '../ClothingSelector/ClothingSelector'
 import ErrorBoundary from '../ErrorBoundary/ErrorBoundary'
 import { PoseAlignmentService } from '@/services/PoseAlignmentService'
-import { usePoseDetection } from './PoseDetectionWrapper'
+import { usePoseEstimation } from '@/hooks/usePoseEstimation'
 import AugmentedView from './AugmentedView'
+import { PoseLandmarks } from './PoseLandmarks'
 
 const clothingItems: ClothingItem[] = [
   {
     id: 't_shirt_1',
     name: 'Womens Shirt',
-    modelPath: './models/womens_shirt/scene.gltf',
-    thumbnail: './models/womens_shirt/thumbnail.jpg',
+    modelPath: '/models/womens_shirt/scene.gltf',
+    thumbnailPath: '/models/womens_shirt/thumbnail.jpg',
     category: 'tops',
-    defaultScale: 2.5,
-    defaultPosition: [0, 0, 0] as [number, number, number],
     offset: {
-      position: { x: 0, y: 0.3, z: 0.2 },
-      rotation: { x: 0, y: Math.PI, z: 0 },
-      scale: 1.5
-    }
+      position: { x: 0, y: 0.12, z: 0.08 },
+      rotation: { x: 0.15, y: Math.PI, z: 0 },
+      scale: 0.9
+    },
+    defaultScale: 0.5,
+    defaultPosition: [0, 0, 0]
   }
 ]
 
+// Update ClothingItem type
+interface ExtendedClothingItem extends ClothingItem {
+  defaultScale: number;
+  defaultPosition: [number, number, number];
+}
+
 const Model = ({ selectedItem, poseData, alignmentService }: { 
-  selectedItem: ClothingItem;
+  selectedItem: ExtendedClothingItem;
   poseData: PoseData | null;
   alignmentService: PoseAlignmentService | null;
 }) => {
   const modelRef = useRef<THREE.Group>(null)
   const { scene } = useGLTF(selectedItem.modelPath)
   const [modelLoaded, setModelLoaded] = useState(false)
+  const lastPositionRef = useRef<THREE.Vector3>(new THREE.Vector3())
+  const lastScaleRef = useRef<number>(selectedItem.defaultScale)
+  const lastRotationRef = useRef<THREE.Euler>(new THREE.Euler())
 
   useEffect(() => {
     if (scene) {
       try {
         const clonedScene = scene.clone(true)
         
-        // Initial positioning for 3D preview
-        clonedScene.scale.setScalar(selectedItem.defaultScale)
-        clonedScene.position.set(0, 0, 0)
-        clonedScene.rotation.set(0, Math.PI, 0)
-
-        // If we have pose data, align with body
         if (poseData?.landmarks && alignmentService) {
           const shoulders = {
             left: poseData.landmarks[11],
             right: poseData.landmarks[12]
           }
+          const neck = poseData.landmarks[0]
+          const chest = poseData.landmarks[23]
           
-          // Calculate position based on shoulders
+          // Calculate improved position based on upper body
           const centerX = (shoulders.left.x + shoulders.right.x) / 2
-          const centerY = shoulders.left.y - 0.2 // Slightly above shoulders
-          const centerZ = (shoulders.left.z + shoulders.right.z) / 2
+          const centerY = (neck.y + shoulders.left.y + shoulders.right.y) / 3 - 0.2
+          const centerZ = (chest.z + (shoulders.left.z + shoulders.right.z) / 2) / 2
           
-          clonedScene.position.set(
+          const targetPosition = new THREE.Vector3(
             centerX * 2,
             -centerY * 2,
             -centerZ * 2
           )
 
-          // Scale based on shoulder width
+          // Enhanced smoothing
+          const smoothingFactor = 0.2
+          const smoothedPosition = lastPositionRef.current.lerp(targetPosition, smoothingFactor)
+          clonedScene.position.copy(smoothedPosition)
+          lastPositionRef.current = smoothedPosition.clone()
+
+          // Improved scaling based on body proportions
           const shoulderWidth = Math.abs(shoulders.right.x - shoulders.left.x)
-          const scale = shoulderWidth * 3
-          clonedScene.scale.setScalar(scale)
+          const torsoHeight = Math.abs(chest.y - shoulders.left.y)
+          const targetScale = (shoulderWidth * 3 + torsoHeight) * 2
+          const smoothedScale = THREE.MathUtils.lerp(lastScaleRef.current, targetScale, smoothingFactor)
+          clonedScene.scale.setScalar(smoothedScale)
+          lastScaleRef.current = smoothedScale
+
+          // Calculate rotation with body lean
+          const shoulderAngle = Math.atan2(
+            shoulders.right.y - shoulders.left.y,
+            shoulders.right.x - shoulders.left.x
+          )
+          const leanAngle = Math.atan2(
+            chest.z - neck.z,
+            chest.y - neck.y
+          )
+
+          const targetRotation = new THREE.Euler(
+            leanAngle * 0.5 + (selectedItem.offset?.rotation.x || 0),
+            Math.PI + shoulderAngle + (selectedItem.offset?.rotation.y || 0),
+            selectedItem.offset?.rotation.z || 0
+          )
+
+          // Smooth rotation
+          clonedScene.rotation.set(
+            THREE.MathUtils.lerp(lastRotationRef.current.x, targetRotation.x, smoothingFactor),
+            THREE.MathUtils.lerp(lastRotationRef.current.y, targetRotation.y, smoothingFactor),
+            THREE.MathUtils.lerp(lastRotationRef.current.z, targetRotation.z, smoothingFactor)
+          )
+          lastRotationRef.current.copy(clonedScene.rotation)
+
+          // Apply clothing offset
+          if (selectedItem.offset) {
+            clonedScene.position.add(new THREE.Vector3(
+              selectedItem.offset.position.x,
+              selectedItem.offset.position.y,
+              selectedItem.offset.position.z
+            ))
+            clonedScene.scale.multiplyScalar(selectedItem.offset.scale)
+          }
+        } else {
+          // Default preview position when no pose data
+          clonedScene.scale.setScalar(selectedItem.defaultScale)
+          clonedScene.position.set(...selectedItem.defaultPosition)
+          clonedScene.rotation.set(0, Math.PI, 0)
         }
 
         if (modelRef.current) {
@@ -98,30 +152,21 @@ const LoadingBox = () => (
 
 const TryOnComponent = () => {
   const videoRef = useRef<HTMLVideoElement>(null)
-  const [selectedItem, setSelectedItem] = useState<ClothingItem>(clothingItems[0])
+  const [selectedItem, setSelectedItem] = useState<ExtendedClothingItem>(clothingItems[0])
   const [poseData, setPoseData] = useState<PoseData | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [webcamError, setWebcamError] = useState<string | null>(null)
   const [alignmentService, setAlignmentService] = useState<PoseAlignmentService | null>(null)
 
-  const handlePoseDetected = useCallback((pose: any) => {
-    setPoseData(pose)
-  }, [])
+  // Use pose estimation hook directly
+  const { poseData: detectedPose, error: poseError } = usePoseEstimation(videoRef)
 
-  const pose = usePoseDetection(videoRef, handlePoseDetected)
-
+  // Update pose data when detection changes
   useEffect(() => {
-    if (videoRef.current && pose) {
-      const processFrame = async () => {
-        if (videoRef.current) {
-          await pose.send({ image: videoRef.current })
-        }
-        requestAnimationFrame(processFrame)
-      }
-
-      processFrame()
+    if (detectedPose) {
+      setPoseData(detectedPose)
     }
-  }, [pose])
+  }, [detectedPose])
 
   useEffect(() => {
     if (!videoRef.current) return
@@ -243,34 +288,6 @@ const TryOnComponent = () => {
         />
       </div>
     </div>
-  )
-}
-
-// Add a component to visualize landmarks
-const PoseLandmarks = ({ landmarks }: { landmarks: PoseData['landmarks'] }) => {
-  return (
-    <svg className="absolute top-0 left-0 w-full h-full" style={{ transform: 'scaleX(-1)' }}>
-      {landmarks.map((landmark, index) => (
-        <circle
-          key={index}
-          cx={landmark.x * 640}
-          cy={landmark.y * 480}
-          r={3}
-          fill={(landmark.visibility ?? 0) > 0.5 ? "lime" : "red"}
-        />
-      ))}
-      {/* Draw lines between shoulders */}
-      {landmarks[11] && landmarks[12] && (
-        <line
-          x1={landmarks[11].x * 640}
-          y1={landmarks[11].y * 480}
-          x2={landmarks[12].x * 640}
-          y2={landmarks[12].y * 480}
-          stroke="yellow"
-          strokeWidth="2"
-        />
-      )}
-    </svg>
   )
 }
 
